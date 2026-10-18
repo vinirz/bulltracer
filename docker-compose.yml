@@ -1,0 +1,36 @@
+# BullTracer — stack self-hosted (dashboard + servidor).
+# O Redis monitorado é cadastrado pela UI; o profile "lab" sobe um Redis de testes.
+services:
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4000
+      DATABASE_PATH: /app/data/dashboard.db
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      - bulltracer-data:/app/data
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    ports:
+      - "${DASHBOARD_PORT:-8080}:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+  # Redis alvo para desenvolvimento e experimentos (docker compose --profile lab up)
+  redis-lab:
+    profiles: ["lab"]
+    image: redis:7.2-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_LAB_PASSWORD:-passlocal}"]
+    ports:
+      - "${REDIS_LAB_PORT:-6390}:6379"
+
+volumes:
+  bulltracer-data:

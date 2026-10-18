@@ -1,0 +1,18 @@
+{
+  "name": "bulltracer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Plataforma open-source para monitoramento ativo de filas BullMQ (TCC — UniAcademia)",
+  "license": "MIT",
+  "author": "Marcos Vinicius dos Reis Nascimento",
+  "packageManager": "pnpm@12.4.2",
+  "engines": { "node": ">=22.21.1" },
+  "scripts": {
+    "dev:server": "pnpm --filter @bulltracer/server dev",
+    "dev:dashboard": "pnpm --filter @bulltracer/dashboard dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "lint": "pnpm -r --if-present lint"
+  }
+}
