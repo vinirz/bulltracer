@@ -89,3 +89,26 @@ describe("agrupamento de erros", () => {
     expect(groups[0]).toMatchObject({ signature: "timeout <n>", count: 2 });
   });
 });
+
+describe("getJob", () => {
+  it("inclui o estado atual e os instantes do job", async () => {
+    const job = {
+      id: "7",
+      name: "t",
+      data: {},
+      opts: { attempts: 3 },
+      failedReason: "boom",
+      stacktrace: ["Error: boom\n    at x (/a.js:1:2)"],
+      timestamp: 100,
+      processedOn: 150,
+      finishedOn: 170,
+      attemptsMade: 1,
+      getState: async () => "failed",
+    };
+    const redis = { getClient: () => ({}), getQueue: () => ({ getJob: async () => job }) };
+    const service = new QueueInspectionService({ findById: async () => connection } as never, redis as never, { debug: jest.fn() } as never);
+    const detail = await service.getJob("c1", "q", "7");
+    expect(detail).toMatchObject({ state: "failed", processedOn: 150, finishedOn: 170, attempts: 3 });
+    expect(detail.stacktrace).toHaveLength(1);
+  });
+});

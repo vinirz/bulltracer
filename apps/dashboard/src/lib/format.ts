@@ -18,3 +18,11 @@ export function formatAge(ms: number): string {
 export function formatThroughput(jobsPerSecond: number): string {
   return `${jobsPerSecond.toFixed(1)} jobs/s`;
 }
+
+/** Horário local `HH:mm:ss`; inclui a data (`dd/MM`) quando não é o mesmo dia de `now`. */
+export function formatTimestamp(epochMs: number, now = Date.now()): string {
+  const date = new Date(epochMs);
+  const time = date.toLocaleTimeString("pt-BR", { hour12: false });
+  if (date.toDateString() === new Date(now).toDateString()) return time;
+  return `${date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${time}`;
+}

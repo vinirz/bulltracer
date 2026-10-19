@@ -1,27 +1,91 @@
-import { AlertTriangle, Check, Copy } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, Copy } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
+import { JobTimeline } from "@/components/jobs/JobTimeline";
+import { StackTrace } from "@/components/jobs/StackTrace";
 import { Badge } from "@/components/ui/badge";
 import { JsonViewer } from "@/components/ui/json-viewer";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { api } from "@/lib/api";
+import type { JobDetailDto } from "@/lib/api/types";
 import { formatAge } from "@/lib/format";
+import { buildJobTimeline } from "@/lib/job-timeline";
 import { statusLabel, statusVariant } from "@/lib/queue-helpers";
 import { useAppStore } from "@/store/useAppStore";
 import { useToastStore } from "@/store/useToastStore";
-import type { JobRecord } from "@/types";
+import type { JobRecord, JobStatus } from "@/types";
 
 export function JobInspector() {
   const { selectedJob, closeJobInspector } = useAppStore();
 
   return (
     <Sheet open={!!selectedJob} onOpenChange={(open) => !open && closeJobInspector()}>
-      {selectedJob ? <JobInspectorContent job={selectedJob} onClose={closeJobInspector} /> : null}
+      {selectedJob ? (
+        <JobInspectorContent key={`${selectedJob.queueName}:${selectedJob.id}`} job={selectedJob} onClose={closeJobInspector} />
+      ) : null}
     </Sheet>
   );
 }
 
+/** Estados do BullMQ que não existem na UI são tratados como o equivalente mais próximo. */
+function toJobStatus(state: string | undefined, fallback: JobStatus): JobStatus {
+  switch (state) {
+    case "waiting":
+    case "waiting-children":
+    case "prioritized":
+      return "waiting";
+    case "active":
+    case "completed":
+    case "failed":
+    case "delayed":
+      return state;
+    default:
+      return fallback;
+  }
+}
+
 function JobInspectorContent({ job, onClose }: { job: JobRecord; onClose: () => void }) {
+  const activeConnectionId = useAppStore((s) => s.activeConnectionId);
+  // A listagem não traz stacktrace nem tempos: o detalhe é buscado ao abrir.
+  const [detail, setDetail] = useState<JobDetailDto | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [now] = useState(() => Date.now()); // "agora" fixo enquanto o inspetor está aberto
+
+  useEffect(() => {
+    if (!activeConnectionId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const loaded = await api.getJob(activeConnectionId, job.queueName, job.id);
+        if (!cancelled) setDetail(loaded);
+      } catch {
+        if (!cancelled) setLoadFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeConnectionId, job.queueName, job.id]);
+
+  const status = toJobStatus(detail?.state, job.status);
+  const stacktrace = detail?.stacktrace ?? job.stacktrace ?? [];
+  const failedReason = detail?.failedReason ?? job.failedReason;
+  const attemptsMade = detail?.attemptsMade ?? job.attemptsMade;
+  const isLoading = !detail && !loadFailed;
+
+  const timeline = useMemo(() => {
+    const opts = (detail?.opts ?? job.opts) as { delay?: number } | undefined;
+    return buildJobTimeline({
+      status,
+      timestamp: detail?.timestamp ?? new Date(job.createdAt).getTime(),
+      processedOn: detail?.processedOn,
+      finishedOn: detail?.finishedOn,
+      delayMs: opts?.delay,
+      now,
+    });
+  }, [detail, job.opts, job.createdAt, status, now]);
+
   return (
     <>
       <SheetHeader
@@ -31,13 +95,13 @@ function JobInspectorContent({ job, onClose }: { job: JobRecord; onClose: () => 
       />
       <SheetBody>
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <Badge variant={statusVariant[job.status]} pulse={job.status === "active"}>
-            {statusLabel[job.status]}
+          <Badge variant={statusVariant[status]} pulse={status === "active"}>
+            {statusLabel[status]}
           </Badge>
           <CopyIdButton id={job.id} />
           <span className="text-xs text-zinc-500">{formatAge(job.ageMs)}</span>
           <span className="text-xs text-zinc-500">
-            · {job.attemptsMade}/{job.attemptsMax} tentativas
+            · {attemptsMade}/{job.attemptsMax} tentativas
           </span>
         </div>
 
@@ -47,14 +111,35 @@ function JobInspectorContent({ job, onClose }: { job: JobRecord; onClose: () => 
             <TabsTrigger value="payload">Payload</TabsTrigger>
             <TabsTrigger
               value="logs"
-              activeClassName={job.status === "failed" ? "!bg-red-500/20" : undefined}
-              className={job.status === "failed" ? "text-red-400" : undefined}
+              activeClassName={status === "failed" ? "!bg-red-500/20" : undefined}
+              className={status === "failed" ? "text-red-400" : undefined}
             >
               Logs & Stacktrace
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="details">
+            <div className="mb-5">
+              <p className="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500">Linha do tempo</p>
+              {isLoading ? (
+                <p className="text-sm text-zinc-500">Carregando detalhes…</p>
+              ) : (
+                <>
+                  <JobTimeline steps={timeline} now={now} />
+                  {attemptsMade > 1 ? (
+                    <p className="mt-3 text-xs text-zinc-500">
+                      Tempos da última tentativa; o job foi tentado {attemptsMade} vezes.
+                    </p>
+                  ) : null}
+                  {loadFailed ? (
+                    <p className="mt-3 text-xs text-amber-400">
+                      Não foi possível carregar os tempos (o job pode ter sido removido).
+                    </p>
+                  ) : null}
+                </>
+              )}
+            </div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">Opções</p>
             <JsonViewer value={job.opts} />
           </TabsContent>
 
@@ -63,20 +148,12 @@ function JobInspectorContent({ job, onClose }: { job: JobRecord; onClose: () => 
           </TabsContent>
 
           <TabsContent value="logs">
-            {job.status === "failed" ? (
-              <div className="rounded-lg border border-red-500/20 bg-red-500/5 p-3">
-                <div className="mb-2 flex items-center gap-2 text-sm font-medium text-red-400">
-                  <AlertTriangle className="h-4 w-4" />
-                  {job.failedReason}
-                </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-zinc-400">
-                  {(job.stacktrace ?? []).join("\n")}
-                </pre>
-              </div>
+            {isLoading ? (
+              <p className="text-sm text-zinc-500">Carregando detalhes…</p>
+            ) : status === "failed" || stacktrace.length > 0 ? (
+              <StackTrace stacks={stacktrace} failedReason={failedReason} />
             ) : (
-              <p className="text-sm text-zinc-500">
-                Nenhum erro registrado para este job.
-              </p>
+              <p className="text-sm text-zinc-500">Nenhum erro registrado para este job.</p>
             )}
           </TabsContent>
         </Tabs>

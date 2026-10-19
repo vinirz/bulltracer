@@ -155,6 +155,8 @@ export interface ErrorGroupDto {
 
 /** Detalhe completo de um job (inspector). */
 export interface JobDetailDto {
+  /** Estado atual no BullMQ (completed, failed, active, waiting, delayed, prioritized, waiting-children, unknown). */
+  state: string;
   id: string;
   name: string;
   data: Record<string, unknown>;

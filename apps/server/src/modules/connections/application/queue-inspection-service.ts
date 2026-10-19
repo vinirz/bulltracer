@@ -136,6 +136,7 @@ export class QueueInspectionService {
       const job = await queue.getJob(jobId);
       if (!job) throw notFound("JOB_NOT_FOUND", `Job ${jobId} não encontrado na fila "${queueName}"`);
       return {
+        state: await job.getState(),
         id: job.id,
         name: job.name,
         data: job.data,
