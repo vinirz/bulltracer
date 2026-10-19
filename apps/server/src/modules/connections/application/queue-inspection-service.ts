@@ -147,7 +147,8 @@ export class QueueInspectionService {
         processedOn: job.processedOn ?? null,
         finishedOn: job.finishedOn ?? null,
         attemptsMade: job.attemptsMade,
-        attempts: typeof job.opts?.attempts === "number" ? job.opts.attempts : 1,
+        // attempts 0 (padrão do BullMQ) = 1 tentativa no total, sem retentativas.
+        attempts: Math.max(1, typeof job.opts?.attempts === "number" ? job.opts.attempts : 1),
       };
     } catch (error) {
       if (error instanceof ApplicationError) throw error;

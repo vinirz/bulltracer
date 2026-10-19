@@ -459,7 +459,8 @@ function toJobRecord(
     processName: item.name || "JOB",
     status,
     attemptsMade: item.attemptsMade,
-    attemptsMax: opts.attempts ?? 1,
+    // No BullMQ, attempts 0 (padrão) significa 1 tentativa no total, sem retentativas.
+    attemptsMax: Math.max(1, opts.attempts ?? 1),
     ageMs: Math.max(0, Date.now() - item.timestamp),
     createdAt: new Date(item.timestamp).toISOString(),
     opts,

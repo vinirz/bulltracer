@@ -111,4 +111,11 @@ describe("getJob", () => {
     expect(detail).toMatchObject({ state: "failed", processedOn: 150, finishedOn: 170, attempts: 3 });
     expect(detail.stacktrace).toHaveLength(1);
   });
+
+  it("trata attempts 0 (padrão do BullMQ) como 1 tentativa no total", async () => {
+    const job = { id: "9", name: "t", data: {}, opts: { attempts: 0 }, timestamp: 1, attemptsMade: 1, stacktrace: [], getState: async () => "failed" };
+    const redis = { getClient: () => ({}), getQueue: () => ({ getJob: async () => job }) };
+    const service = new QueueInspectionService({ findById: async () => connection } as never, redis as never, { debug: jest.fn() } as never);
+    expect((await service.getJob("c1", "q", "9")).attempts).toBe(1);
+  });
 });
