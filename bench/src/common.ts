@@ -1,6 +1,6 @@
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 
-import type { ConnectionOptions } from "bullmq";
+import type { RedisOptions } from "bullmq";
 
 /** Opções de linha de comando compartilhadas pelo producer e pelo consumer. */
 export const connectionFlags = {
@@ -26,7 +26,7 @@ export function buildConnection(values: {
   port: string;
   username?: string;
   password?: string;
-}): ConnectionOptions {
+}): RedisOptions {
   return {
     host: values.host,
     port: parseNumber("--port", values.port, { min: 1, max: 65535, integer: true }),

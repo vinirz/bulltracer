@@ -7,14 +7,20 @@
   "scripts": {
     "producer": "tsx src/producer.ts",
     "consumer": "tsx src/consumer.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bull-board": "tsx src/competitors/bull-board.ts"
   },
   "dependencies": {
-    "bullmq": "^6.3.4"
+    "bullmq": "^6.3.4",
+    "@bull-board/api": "^9.10.4",
+    "@bull-board/express": "^9.10.4",
+    "express": "^4.21.2",
+    "ioredis": "^5.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
     "tsx": "^4.19.3",
-    "typescript": "~5.8.2"
+    "typescript": "~5.8.2",
+    "@types/express": "^4.17.21"
   }
 }
