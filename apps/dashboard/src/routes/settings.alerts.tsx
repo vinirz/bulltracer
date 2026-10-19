@@ -36,6 +36,10 @@ function AlertsPage() {
   const [loading, setLoading] = useState(true);
   const push = useToastStore((s) => s.push);
   const apiStatus = useAppStore((s) => s.apiStatus);
+  const activeConnectionId = useAppStore((s) => s.activeConnectionId);
+  const activeConnection = useAppStore((s) => s.connections.find((c) => c.id === s.activeConnectionId));
+  // Regras são por conexão: a tela mostra só as da conexão ativa. Canais são compartilhados.
+  const visibleRules = rules.filter((r) => r.connectionId === activeConnectionId);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,7 +143,8 @@ function AlertsPage() {
       <div>
         <h1 className="text-xl font-semibold text-zinc-100">Alertas & Webhooks</h1>
         <p className="text-sm text-zinc-500">
-          Configure canais de notificação e regras de alerta cruzando filas e métricas.
+          Canais de notificação são compartilhados entre conexões; as regras de alerta pertencem a
+          cada conexão.
         </p>
       </div>
 
@@ -227,11 +232,19 @@ function AlertsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="font-sans text-base">Regras de Alerta</CardTitle>
+          <div>
+            <CardTitle className="font-sans text-base">Regras de Alerta</CardTitle>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              {activeConnection
+                ? `Conexão: ${activeConnection.name} (${activeConnection.host}:${activeConnection.port})`
+                : "Nenhuma conexão selecionada."}
+            </p>
+          </div>
           <button
             type="button"
+            disabled={!activeConnection}
             onClick={() => setRuleDialogOpen(true)}
-            className="flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors duration-150 hover:bg-zinc-800"
+            className="flex items-center gap-1.5 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors duration-150 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40"
           >
             <Plus className="h-3.5 w-3.5" />
             Nova Regra
@@ -250,7 +263,7 @@ function AlertsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800">
-                {rules.map((rule) => {
+                {visibleRules.map((rule) => {
                   const webhook = channels.find((w) => w.id === rule.webhookId);
                   return (
                     <motion.tr
@@ -303,9 +316,11 @@ function AlertsPage() {
                 })}
               </tbody>
             </table>
-            {!loading && rules.length === 0 ? (
+            {!loading && visibleRules.length === 0 ? (
               <p className="py-6 text-center text-sm text-zinc-500">
-                Nenhuma regra de alerta configurada.
+                {activeConnection
+                  ? "Nenhuma regra de alerta para esta conexão."
+                  : "Selecione uma conexão para ver as regras de alerta."}
               </p>
             ) : null}
           </div>
