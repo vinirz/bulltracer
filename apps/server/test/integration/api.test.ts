@@ -160,4 +160,39 @@ describe("REST API (@bulltracer/server)", () => {
     const job = await request(app.server).get(`${base}/jobs/123`);
     expect(job.status).toBe(404);
   });
+
+  it("DELETE com Content-Type JSON e corpo vazio funciona (webhook, regra e conexão)", async () => {
+    const asJson = (req: request.Test) => req.set("Content-Type", "application/json");
+
+    const conn = await request(app.server)
+      .post("/api/connections")
+      .send({ name: "del-conn", host: "redis.invalid", port: 6379 })
+      .expect(201);
+    const webhook = await request(app.server)
+      .post("/api/webhooks")
+      .send({ name: "del-hook", url: "https://example.com/hook" })
+      .expect(201);
+    const rule = await request(app.server)
+      .post("/api/alerts")
+      .send({
+        connectionId: conn.body.id,
+        queueName: "q",
+        metricType: "failed_jobs",
+        threshold: 3,
+        webhookId: webhook.body.id,
+      })
+      .expect(201);
+
+    await asJson(request(app.server).delete(`/api/alerts/${rule.body.id}`)).expect(204);
+    await asJson(request(app.server).delete(`/api/webhooks/${webhook.body.id}`)).expect(204);
+    await asJson(request(app.server).delete(`/api/connections/${conn.body.id}`)).expect(204);
+  });
+
+  it("JSON malformado continua respondendo 400", async () => {
+    await request(app.server)
+      .post("/api/webhooks")
+      .set("Content-Type", "application/json")
+      .send("{nao-e-json")
+      .expect(400);
+  });
 });

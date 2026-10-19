@@ -30,10 +30,12 @@ export async function request<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  // Content-Type só quando há corpo: DELETE/GET sem corpo e com o header JSON
+  // são rejeitados pelo servidor (400 FST_ERR_CTP_EMPTY_JSON_BODY).
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(init.body != null ? { "Content-Type": "application/json" } : {}),
       ...init.headers,
     },
   });

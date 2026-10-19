@@ -102,6 +102,19 @@ export async function buildApp(ctx: BuildContext): Promise<{ app: FastifyInstanc
     bodyLimit: 1_048_576,
   });
 
+  // Aceita `Content-Type: application/json` com corpo vazio (ex.: DELETE de um
+  // cliente que sempre envia o header). O parser padrão do Fastify 5 responde
+  // 400 FST_ERR_CTP_EMPTY_JSON_BODY nesse caso; JSON malformado continua 400.
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (_request, body, done) => {
+    if (body === "") return done(null, undefined);
+    try {
+      done(null, JSON.parse(body as string));
+    } catch (error) {
+      done(Object.assign(error as Error, { statusCode: 400 }), undefined);
+    }
+  });
+
   await app.register(fastifyWebsocket);
   await app.register(fastifyCors, {
     // Self-Hosted: por padrão aceita qualquer origem (o deploy real deve

@@ -3,5 +3,18 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Experimentos de validação do BullTracer (vazão, falhas, latência, overhead)"
+  "description": "Experimentos de validação do BullTracer (vazão, falhas, latência, overhead)",
+  "scripts": {
+    "producer": "tsx src/producer.ts",
+    "consumer": "tsx src/consumer.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bullmq": "^6.3.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "tsx": "^4.19.3",
+    "typescript": "~5.8.2"
+  }
 }
