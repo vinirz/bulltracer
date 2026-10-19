@@ -12,8 +12,8 @@ import type {
  *   janela (FAILED_JOBS_WINDOW_MS). A regra é violada quando o número de
  *   falhas na janela atinge o threshold. O contador não persiste nada além
  *   da memória — a Dupla Fonte de Verdade é mantida.
- * - `wait_time_exceeded`: viola quando o job esperou mais que `threshold`
- *   (em ms). O wait time vem do Job (processedOn - timestamp) através do ctx.
+ * - `wait_time_exceeded`: avaliada no evento `active`; viola quando o job
+ *   esperou na fila `threshold` ms ou mais (`ctx.waitTimeMs`, calculado pelo Watcher).
  */
 export class InMemoryRuleEvaluator implements RuleEvaluator {
   private readonly failedCounts = new Map<string, number[]>();
@@ -40,7 +40,7 @@ export class InMemoryRuleEvaluator implements RuleEvaluator {
           });
         }
       } else if (rule.metricType === "wait_time_exceeded") {
-        if (ctx.waitTimeMs === undefined) continue;
+        if (ctx.event !== "active" || ctx.waitTimeMs === undefined) continue;
         const value = ctx.waitTimeMs;
         if (value >= rule.threshold) {
           violations.push({

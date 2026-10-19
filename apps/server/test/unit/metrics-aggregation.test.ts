@@ -105,3 +105,17 @@ describe("normalizeSignature", () => {
     expect(normalizeSignature("ERRO [job-42]: 3 tentativas")).toBe("ERRO [job-<n>]: <n> tentativas");
   });
 });
+
+describe("aggregateHeatmap — fuso horário", () => {
+  // 2026-10-19T00:29:00Z = domingo 18/10 às 21h em São Paulo (UTC-3), segunda 0h em UTC.
+  const at = Date.UTC(2026, 9, 19, 0, 29);
+  const jobs = [{ timestamp: at, finishedOn: at }];
+
+  it("usa UTC por padrão", () => {
+    expect(aggregateHeatmap(jobs, at + 1000)[0]).toMatchObject({ day: 1, hour: 0 });
+  });
+
+  it("agrupa no fuso informado (dia e hora locais)", () => {
+    expect(aggregateHeatmap(jobs, at + 1000, "America/Sao_Paulo")[0]).toMatchObject({ day: 0, hour: 21 });
+  });
+});

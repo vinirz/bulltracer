@@ -10,7 +10,6 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { alertMetricMeta, formatAlertThreshold } from "@/lib/queue-helpers";
 import { api, ApiError } from "@/lib/api";
-import { mockAlertRules, mockWebhooks } from "@/mocks";
 import { useAppStore } from "@/store/useAppStore";
 import { useToastStore } from "@/store/useToastStore";
 import type { AlertMetricType, AlertRule, Webhook } from "@/types";
@@ -37,7 +36,6 @@ function AlertsPage() {
   const [loading, setLoading] = useState(true);
   const push = useToastStore((s) => s.push);
   const apiStatus = useAppStore((s) => s.apiStatus);
-  const isOnline = apiStatus === "online";
 
   useEffect(() => {
     let cancelled = false;
@@ -55,11 +53,9 @@ function AlertsPage() {
         } catch {
           if (!cancelled) push("Falha ao carregar alertas do servidor.", "danger");
         }
-      } else {
-        if (!cancelled) {
-          setChannels(mockWebhooks);
-          setRules(mockAlertRules);
-        }
+      } else if (!cancelled) {
+        setChannels([]);
+        setRules([]);
       }
       if (!cancelled) setLoading(false);
     }
@@ -77,18 +73,8 @@ function AlertsPage() {
   async function addChannel() {
     if (!webhookName || !webhookUrl) return;
     try {
-      if (isOnline) {
-        const created = await api.createWebhook({ name: webhookName, url: webhookUrl });
-        setChannels((prev) => [...prev, created]);
-      } else {
-        const newChannel: Webhook = {
-          id: `wh-${crypto.randomUUID().slice(0, 8)}`,
-          name: webhookName,
-          url: webhookUrl,
-          createdAt: new Date().toISOString(),
-        };
-        setChannels((prev) => [...prev, newChannel]);
-      }
+      const created = await api.createWebhook({ name: webhookName, url: webhookUrl });
+      setChannels((prev) => [...prev, created]);
       push(`Canal "${webhookName}" adicionado.`, "success");
       setWebhookName("");
       setWebhookUrl("");
@@ -99,7 +85,7 @@ function AlertsPage() {
 
   async function removeChannel(channel: Webhook) {
     try {
-      if (isOnline) await api.deleteWebhook(channel.id);
+      await api.deleteWebhook(channel.id);
       setChannels((prev) => prev.filter((c) => c.id !== channel.id));
       setRules((prev) => prev.filter((r) => r.webhookId !== channel.id));
       push(`Canal "${channel.name}" removido.`, "info");
@@ -110,12 +96,8 @@ function AlertsPage() {
 
   async function updateChannel(id: string, data: { name: string; url: string }) {
     try {
-      if (isOnline) {
-        const updated = await api.updateWebhook(id, data);
-        setChannels((prev) => prev.map((c) => (c.id === id ? updated : c)));
-      } else {
-        setChannels((prev) => prev.map((c) => (c.id === id ? { ...c, ...data } : c)));
-      }
+      const updated = await api.updateWebhook(id, data);
+      setChannels((prev) => prev.map((c) => (c.id === id ? updated : c)));
       push(`Canal "${data.name}" atualizado.`, "success");
     } catch (error) {
       push(`Falha ao atualizar canal: ${errorMessage(error)}`, "danger");
@@ -124,12 +106,8 @@ function AlertsPage() {
 
   async function createRule(rule: Omit<AlertRule, "id">) {
     try {
-      if (isOnline) {
-        const created = await api.createAlertRule(rule);
-        setRules((prev) => [...prev, created]);
-      } else {
-        setRules((prev) => [...prev, { ...rule, id: `alert-${crypto.randomUUID().slice(0, 8)}` }]);
-      }
+      const created = await api.createAlertRule(rule);
+      setRules((prev) => [...prev, created]);
       push(`Regra para "${rule.queueName}" criada.`, "success");
     } catch (error) {
       push(`Falha ao criar regra: ${errorMessage(error)}`, "danger");
@@ -138,12 +116,8 @@ function AlertsPage() {
 
   async function updateRule(id: string, rule: Omit<AlertRule, "id">) {
     try {
-      if (isOnline) {
-        const updated = await api.updateAlertRule(id, rule);
-        setRules((prev) => prev.map((r) => (r.id === id ? updated : r)));
-      } else {
-        setRules((prev) => prev.map((r) => (r.id === id ? { ...r, ...rule } : r)));
-      }
+      const updated = await api.updateAlertRule(id, rule);
+      setRules((prev) => prev.map((r) => (r.id === id ? updated : r)));
       push(`Regra para "${rule.queueName}" atualizada.`, "success");
     } catch (error) {
       push(`Falha ao atualizar regra: ${errorMessage(error)}`, "danger");
@@ -152,7 +126,7 @@ function AlertsPage() {
 
   async function removeRule(rule: AlertRule) {
     try {
-      if (isOnline) await api.deleteAlertRule(rule.id);
+      await api.deleteAlertRule(rule.id);
       setRules((prev) => prev.filter((r) => r.id !== rule.id));
       push(`Regra para "${rule.queueName}" removida.`, "info");
     } catch (error) {

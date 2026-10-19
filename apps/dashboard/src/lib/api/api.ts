@@ -54,7 +54,7 @@ export const api = {
     ),
   getHeatmap: (connectionId: string, queueName: string) =>
     http.get<HeatmapCellDto[]>(
-      `/api/connections/${encodeURIComponent(connectionId)}/queues/${encodeURIComponent(queueName)}/heatmap`,
+      `/api/connections/${encodeURIComponent(connectionId)}/queues/${encodeURIComponent(queueName)}/heatmap?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`,
     ),
   getErrors: (connectionId: string, queueName: string) =>
     http.get<ErrorGroupDto[]>(

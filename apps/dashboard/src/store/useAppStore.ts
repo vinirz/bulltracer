@@ -1,27 +1,28 @@
 import { create } from "zustand";
 
 import { api, connectRealtime } from "@/lib/api";
-import { mockConnections, mockQueues } from "@/mocks";
 import type { JobRecord, QueueSummary, RedisConnection } from "@/types";
 
 export type ApiStatus = "checking" | "online" | "offline";
 
 interface AppState {
-  /** Todas as conexões Redis conhecidas (API ou mock em modo demo). */
+  /** Todas as conexões Redis cadastradas no servidor. */
   connections: RedisConnection[];
-  /** ID da conexão atualmente selecionada no Sidebar. */
+  /** ID da conexão atualmente selecionada (persistido no navegador). */
   activeConnectionId: string | null;
   setActiveConnectionId: (id: string) => void;
   /** Simula a latência de reconexão ao trocar de instância Redis. */
   isSwitchingConnection: boolean;
 
-  /** Filas da conexão ativa (snapshot da API ou mocks em modo demo). */
+  /** Filas da conexão ativa (snapshot da API). */
   queues: QueueSummary[];
+  /** Mensagem de erro ao listar as filas da conexão ativa (ex.: Redis inacessível); `null` se ok. */
+  queuesError: string | null;
   /** Se o servidor BullTracer está acessível. */
   apiStatus: ApiStatus;
   /** Inicializa o app: health check, conexões, filas e realtime. */
   initApp: () => Promise<void>;
-  /** Recarrega as filas da conexão ativa (com fallback mock por conexão). */
+  /** Recarrega as filas da conexão ativa. */
   reloadQueues: () => Promise<void>;
   /** Recarrega as conexões a partir da API. */
   reloadConnections: () => Promise<void>;
@@ -72,17 +73,37 @@ export function snapshotToQueueSummary(
   };
 }
 
-const DEFAULT_MOCK_FOR_CONNECTION = (connectionId: string | null) =>
-  mockQueues.filter((q) => q.connectionId === connectionId);
+const ACTIVE_CONNECTION_KEY = "bulltracer:activeConnectionId";
+
+function loadActiveConnectionId(): string | null {
+  try {
+    return window.localStorage.getItem(ACTIVE_CONNECTION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveConnectionId(id: string | null): void {
+  try {
+    if (id) window.localStorage.setItem(ACTIVE_CONNECTION_KEY, id);
+    else window.localStorage.removeItem(ACTIVE_CONNECTION_KEY);
+  } catch {
+    // armazenamento indisponível (modo privado/bloqueado): segue sem persistir
+  }
+}
+
+const OFFLINE_MESSAGE = "Servidor BullTracer não acessível.";
 
 let realtimeStop: (() => void) | null = null;
 let reloadDebounceTimer: number | null = null;
 
 export const useAppStore = create<AppState>((set, get) => ({
-  connections: mockConnections,
-  activeConnectionId: mockConnections[0]?.id ?? null,
+  connections: [],
+  // Restaura a última conexão escolhida; é validada contra a API em reloadConnections.
+  activeConnectionId: loadActiveConnectionId(),
   isSwitchingConnection: false,
-  queues: mockQueues,
+  queues: [],
+  queuesError: null,
   apiStatus: "checking",
 
   initApp: async () => {
@@ -110,14 +131,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   reloadConnections: async () => {
-    const { apiStatus } = get();
-    if (apiStatus !== "online") return;
+    if (get().apiStatus !== "online") return;
     try {
       const remote = await api.listConnections();
+      const current = get().activeConnectionId;
       const activeConnectionId =
-        get().activeConnectionId && remote.some((c) => c.id === get().activeConnectionId)
-          ? get().activeConnectionId
-          : (remote[0]?.id ?? null);
+        current && remote.some((c) => c.id === current) ? current : (remote[0]?.id ?? null);
+      saveActiveConnectionId(activeConnectionId);
       set({
         connections: remote.map((c) => ({
           id: c.id,
@@ -131,7 +151,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeConnectionId,
       });
     } catch {
-      // API caiu no meio do caminho — mantém o modo demo.
+      // API caiu no meio do caminho.
       set({ apiStatus: "offline" });
     }
   },
@@ -139,19 +159,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   reloadQueues: async () => {
     const { apiStatus, activeConnectionId } = get();
     if (apiStatus !== "online" || !activeConnectionId) {
-      set({ queues: DEFAULT_MOCK_FOR_CONNECTION(activeConnectionId) });
+      set({ queues: [], queuesError: null });
       return;
     }
     try {
       const snapshots = await api.listQueues(activeConnectionId);
-      set({ queues: snapshots.map((s) => snapshotToQueueSummary(s, activeConnectionId)) });
-    } catch {
-      // Conexão ativa não registrada no servidor (ex: mocks) → fallback demo.
-      set({ queues: DEFAULT_MOCK_FOR_CONNECTION(activeConnectionId) });
+      set({
+        queues: snapshots.map((s) => snapshotToQueueSummary(s, activeConnectionId)),
+        queuesError: null,
+      });
+    } catch (error) {
+      set({
+        queues: [],
+        queuesError: error instanceof Error ? error.message : "Não foi possível listar as filas.",
+      });
     }
   },
 
   setActiveConnectionId: (id) => {
+    saveActiveConnectionId(id);
     set({ activeConnectionId: id, isSwitchingConnection: true });
     void get()
       .reloadQueues()
@@ -159,61 +185,34 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   addConnection: async (connection) => {
-    const { apiStatus } = get();
-    if (apiStatus === "online") {
-      const created = await api.createConnection({
-        name: connection.name,
-        host: connection.host,
-        port: connection.port,
-        password: connection.password ?? undefined,
-      });
-      await get().reloadConnections();
-      set({ activeConnectionId: created.id });
-      return;
-    }
-    const id = `conn-${crypto.randomUUID().slice(0, 8)}`;
-    set((state) => ({
-      connections: [
-        ...state.connections,
-        { ...connection, id, status: "connected", queueCount: 0 },
-      ],
-    }));
+    if (get().apiStatus !== "online") throw new Error(OFFLINE_MESSAGE);
+    const created = await api.createConnection({
+      name: connection.name,
+      host: connection.host,
+      port: connection.port,
+      password: connection.password ?? undefined,
+    });
+    await get().reloadConnections();
+    get().setActiveConnectionId(created.id);
   },
 
   updateConnection: async (id, connection) => {
-    const { apiStatus } = get();
-    if (apiStatus === "online") {
-      await api.updateConnection(id, {
-        name: connection.name,
-        host: connection.host,
-        port: connection.port,
-        password: connection.password ?? undefined,
-      });
-      await get().reloadConnections();
-      return;
-    }
-    set((state) => ({
-      connections: state.connections.map((c) =>
-        c.id === id ? { ...c, ...connection } : c,
-      ),
-    }));
+    if (get().apiStatus !== "online") throw new Error(OFFLINE_MESSAGE);
+    await api.updateConnection(id, {
+      name: connection.name,
+      host: connection.host,
+      port: connection.port,
+      password: connection.password ?? undefined,
+    });
+    await get().reloadConnections();
+    await get().reloadQueues();
   },
 
   removeConnection: async (id) => {
-    const { apiStatus } = get();
-    if (apiStatus === "online") {
-      await api.deleteConnection(id);
-      await get().reloadConnections();
-      return;
-    }
-    set((state) => {
-      const connections = state.connections.filter((c) => c.id !== id);
-      const activeConnectionId =
-        state.activeConnectionId === id
-          ? (connections[0]?.id ?? null)
-          : state.activeConnectionId;
-      return { connections, activeConnectionId };
-    });
+    if (get().apiStatus !== "online") throw new Error(OFFLINE_MESSAGE);
+    await api.deleteConnection(id);
+    await get().reloadConnections();
+    await get().reloadQueues();
   },
 
   isSidebarOpen: false,

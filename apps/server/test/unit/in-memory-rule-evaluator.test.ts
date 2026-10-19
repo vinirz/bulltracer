@@ -61,12 +61,20 @@ describe("InMemoryRuleEvaluator", () => {
     const rules = [
       rule({ id: "rule-wait", metricType: "wait_time_exceeded", threshold: 10_000 }),
     ];
-    const ok = await evaluator.evaluate(rules, { ...baseCtx, waitTimeMs: 5_000 });
+    const activeCtx = { ...baseCtx, event: "active" as const };
+    const ok = await evaluator.evaluate(rules, { ...activeCtx, waitTimeMs: 5_000 });
     expect(ok).toHaveLength(0);
 
-    const violado = await evaluator.evaluate(rules, { ...baseCtx, jobId: 'job-slow', waitTimeMs: 15_000 });
+    const violado = await evaluator.evaluate(rules, { ...activeCtx, jobId: "job-slow", waitTimeMs: 15_000 });
     expect(violado).toHaveLength(1);
     expect(violado[0]).toMatchObject({ ruleId: "rule-wait", value: 15_000 });
+  });
+
+  it("wait_time_exceeded só é avaliada no evento active", async () => {
+    const evaluator = new InMemoryRuleEvaluator();
+    const rules = [rule({ metricType: "wait_time_exceeded", threshold: 1_000 })];
+    const violations = await evaluator.evaluate(rules, { ...baseCtx, event: "failed", waitTimeMs: 99_000 });
+    expect(violations).toHaveLength(0);
   });
 
   it("regras de outros tipos de evento não disparam failed_jobs", async () => {

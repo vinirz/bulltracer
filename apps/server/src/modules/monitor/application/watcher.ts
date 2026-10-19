@@ -5,6 +5,7 @@ import type { AlertsService } from "../../alerts/application/alerts-service.js";
 import type { WebhookDispatcher } from "../../alerts/infrastructure/webhook-dispatcher.js";
 import type { RedisConnection } from "../../connections/domain/entities.js";
 import type { RedisManager } from "../../connections/infrastructure/redis-manager.js";
+import { computeWaitTimeMs } from "./wait-time.js";
 import type {
   BullMqEventType,
   NotificationSink,
@@ -26,7 +27,7 @@ interface WatchedQueue {
  *
  * Para cada evento:
  *   1. broadcast via WebSocket `{ type: 'BULLMQ_EVENT', ... }`;
- *   2. quando `failed`, consulta as alert_rules da fila; se violadas,
+ *   2. quando `failed` ou `active`, consulta as alert_rules da fila; se violadas,
  *      dispara o webhook do canal de forma ASSÍNCRONA (fire-and-forget com
  *      `void dispatch()`, nunca bloqueando o Event Loop).
  *
@@ -147,12 +148,18 @@ export class Watcher {
       data: { ...payload, jobId },
     });
 
-    // Ação 2: avaliação de regras apenas em eventos terminais de falha.
-    if (event !== "failed") return;
+    // Ação 2: avaliação de regras. `failed` alimenta `failed_jobs`; `active`
+    // alimenta `wait_time_exceeded` (o job acabou de sair da fila).
+    if (event !== "failed" && event !== "active") return;
 
     try {
       const rules = await this.alertsService.rulesForQueue(connection.id, queueName);
       if (rules.length === 0) return;
+
+      let waitTimeMs: number | undefined;
+      if (event === "active" && rules.some((r) => r.metricType === "wait_time_exceeded")) {
+        waitTimeMs = await this.measureWaitTime(connection, queueName, jobId, occurredAt);
+      }
 
       const violations = await this.evaluator.evaluate(rules, {
         event,
@@ -160,6 +167,7 @@ export class Watcher {
         connectionId: connection.id,
         queueName,
         occurredAt,
+        waitTimeMs,
       });
 
       for (const violation of violations) {
@@ -200,6 +208,18 @@ export class Watcher {
         "Erro ao avaliar regras de alerta",
       );
     }
+  }
+
+  /** Lê o job no Redis e calcula quanto ele esperou na fila; `undefined` se não mensurável. */
+  private async measureWaitTime(
+    connection: RedisConnection,
+    queueName: string,
+    jobId: string,
+    now: number,
+  ): Promise<number | undefined> {
+    const job = await this.redisManager.getQueue(connection, queueName).getJob(jobId);
+    if (!job) return undefined;
+    return computeWaitTimeMs(job, now) ?? undefined;
   }
 
   /** Reinicia o monitoramento de uma fila (usado após alterações de regras). */

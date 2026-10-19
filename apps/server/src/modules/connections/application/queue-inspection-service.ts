@@ -6,14 +6,33 @@ import type { RedisConnection } from "../domain/entities.js";
 import type { ConnectionRepository } from "../domain/ports.js";
 import type { RedisManager } from "../infrastructure/redis-manager.js";
 import {
+  eventsToTimings,
+  parseFinishedEvents,
+  retainsCompletedJobs,
+  sampleEvenly,
+  type FinishedEvent,
+  type StreamEntry,
+} from "./event-stream.js";
+import {
   aggregateErrors,
   aggregateHeatmap,
   aggregateMetrics,
+  HEATMAP_WINDOW_DAYS,
+  METRIC_BUCKET_MINUTES,
+  METRIC_POINTS,
   type ErrorGroup,
   type HeatmapCell,
   type JobTimings,
   type MetricPoint,
 } from "./metrics-aggregation.js";
+
+/** Origem dos números de uma métrica: jobs existentes no Redis ou o stream de eventos do BullMQ. */
+export type MetricsSource = "jobs" | "events";
+
+const EVENTS_BATCH = 1000;
+const EVENTS_MAX = 20_000;
+const RETENTION_SAMPLE = 30;
+const ERRORS_WINDOW_MS = 14 * 24 * 60 * 60_000;
 
 /**
  * Casos de uso de inspeção de filas — leitura DIRETA do Redis (BullMQ).
@@ -135,6 +154,51 @@ export class QueueInspectionService {
     }
   }
 
+  /** Eventos `completed`/`failed` do stream da fila desde `sinceMs` (leitura direta, com teto). */
+  private async readFinishedEvents(
+    connection: RedisConnection,
+    queueName: string,
+    sinceMs: number,
+  ): Promise<{ events: FinishedEvent[]; truncated: boolean }> {
+    const client = this.redis.getClient(connection);
+    const key = `bull:${queueName}:events`;
+    const entries: StreamEntry[] = [];
+    let start = `${Math.max(0, Math.floor(sinceMs))}-0`;
+    while (entries.length < EVENTS_MAX) {
+      const batch = (await client.xrange(key, start, "+", "COUNT", EVENTS_BATCH)) as StreamEntry[];
+      if (batch.length === 0) break;
+      entries.push(...batch);
+      const [ms, seq] = (batch[batch.length - 1] as StreamEntry)[0].split("-");
+      start = `${ms}-${Number(seq) + 1}`;
+      if (batch.length < EVENTS_BATCH) break;
+    }
+    const maxLen = Number(await client.hget(`bull:${queueName}:meta`, "opts.maxLenEvents")) || 10_000;
+    const total = await client.xlen(key);
+    // Stream cheio: as entradas mais antigas já foram aparadas pelo BullMQ.
+    return { events: parseFinishedEvents(entries), truncated: total >= maxLen };
+  }
+
+  /** A fila mantém os jobs concluídos? Confere no Redis uma amostra espalhada pela janela. */
+  private async retainsJobs(
+    connection: RedisConnection,
+    queueName: string,
+    events: FinishedEvent[],
+  ): Promise<boolean> {
+    const completed = events.filter((e) => e.event === "completed" && e.jobId);
+    if (completed.length === 0) return true; // nada a inferir: usa o que existir
+    const sample = sampleEvenly(completed, RETENTION_SAMPLE);
+    const client = this.redis.getClient(connection);
+    const found = await Promise.all(sample.map((e) => client.exists(`bull:${queueName}:${e.jobId}`)));
+    return retainsCompletedJobs(found.reduce<number>((acc, n) => acc + n, 0), sample.length);
+  }
+
+  /** Escolhe a origem: jobs existentes quando a fila os retém; senão, o stream de eventos. */
+  private async resolveSource(connection: RedisConnection, queueName: string, sinceMs: number) {
+    const { events, truncated } = await this.readFinishedEvents(connection, queueName, sinceMs);
+    const source: MetricsSource = (await this.retainsJobs(connection, queueName, events)) ? "jobs" : "events";
+    return { source, events, truncated };
+  }
+
   /** Extrai o mínimo temporal dos jobs BullMQ para as agregações (sem payloads). */
   private toTimings(jobs: { id?: string; timestamp: number; processedOn?: number | null; finishedOn?: number | null; failedReason?: string | null }[]): JobTimings[] {
     return jobs.map((job) => ({
@@ -148,31 +212,51 @@ export class QueueInspectionService {
 
   /**
    * Séries de 5 em 5 minutos (12 pontos = 1h) de throughput, espera e
-   * processamento, computadas dos jobs finalizados no Redis. Inclui um
-   * `summary` com as médias da janela — usado pelos MetricCards da tela.
+   * processamento. Quando a fila retém os jobs concluídos, os números vêm dos
+   * jobs (com tempos de espera/processamento); quando os remove
+   * (`removeOnComplete`), vêm do stream de eventos e os tempos ficam `null`.
    */
   async getMetrics(
     connectionId: string,
     queueName: string,
     rangeMinutes = 60,
-  ): Promise<{ rangeMinutes: number; points: MetricPoint[]; summary: { throughput: number; waitTimeMs: number; processTimeMs: number; queuePressure: number } }> {
+  ): Promise<{
+    rangeMinutes: number;
+    source: MetricsSource;
+    truncated: boolean;
+    /** Status de job que a fila mantém no Redis (a UI esconde o que não existe). */
+    retention: { completed: boolean; failed: boolean };
+    points: MetricPoint[];
+    summary: {
+      throughput: number;
+      waitTimeMs: number | null;
+      processTimeMs: number | null;
+      queuePressure: number;
+    };
+  }> {
     const connection = await this.resolveConnection(connectionId);
     const now = Date.now();
-    const limit = Math.min(1000, Math.max(200, Math.ceil((rangeMinutes / 5) * 60)));
+    const windowMs = Math.max(rangeMinutes, METRIC_BUCKET_MINUTES * METRIC_POINTS) * 60_000;
     try {
       const queue = this.redis.getQueue(connection, queueName);
-      const [jobs, counts] = await Promise.all([
-        queue.getJobs(["completed", "failed"], 0, limit),
-        queue.getJobCounts(),
-      ]);
-      const timings = this.toTimings(jobs);
+      const { source, events, truncated } = await this.resolveSource(connection, queueName, now - windowMs);
+
+      let timings: JobTimings[];
+      if (source === "events") {
+        timings = eventsToTimings(events);
+      } else {
+        const limit = Math.min(1000, Math.max(200, Math.ceil((rangeMinutes / 5) * 60)));
+        timings = this.toTimings(await queue.getJobs(["completed", "failed"], 0, limit));
+      }
+      const counts = await queue.getJobCounts();
+
       const points = aggregateMetrics(timings, now);
       const windowJobs = timings.filter((job) => (job.finishedOn ?? job.timestamp) >= now - rangeMinutes * 60_000);
       const windowSeconds = Math.max(1, rangeMinutes * 60);
-      const wait = windowJobs.map((j) => (j.processedOn && j.timestamp ? j.processedOn - j.timestamp : null)).filter((v): v is number => v !== null);
-      const process = windowJobs.map((j) => (j.processedOn && j.finishedOn ? j.finishedOn - j.processedOn : null)).filter((v): v is number => v !== null);
       const avg = (values: number[]) =>
         values.length === 0 ? 0 : values.reduce((a, b) => a + b, 0) / values.length;
+      const wait = windowJobs.map((j) => (j.processedOn && j.timestamp ? j.processedOn - j.timestamp : null)).filter((v): v is number => v !== null);
+      const process = windowJobs.map((j) => (j.processedOn && j.finishedOn ? j.finishedOn - j.processedOn : null)).filter((v): v is number => v !== null);
       const waiting = counts.waiting ?? 0;
       const active = counts.active ?? 0;
       const queuePressure = waiting + active > 0
@@ -180,11 +264,18 @@ export class QueueInspectionService {
         : 0;
       return {
         rangeMinutes,
+        source,
+        truncated,
+        retention: {
+          completed: source === "jobs",
+          // Falhas no stream sem nenhum job falho no Redis: a fila usa `removeOnFail`.
+          failed: !(events.some((e) => e.event === "failed") && (counts.failed ?? 0) === 0),
+        },
         points,
         summary: {
           throughput: Number((windowJobs.length / windowSeconds).toFixed(2)),
-          waitTimeMs: Math.round(avg(wait)),
-          processTimeMs: Math.round(avg(process)),
+          waitTimeMs: source === "events" ? null : Math.round(avg(wait)),
+          processTimeMs: source === "events" ? null : Math.round(avg(process)),
           queuePressure,
         },
       };
@@ -194,12 +285,14 @@ export class QueueInspectionService {
   }
 
   /** Heatmap 7×24 (volume e taxa de falha por dia-da-semana/hora), últimos 14 dias. */
-  async getHeatmap(connectionId: string, queueName: string): Promise<HeatmapCell[]> {
+  async getHeatmap(connectionId: string, queueName: string, timeZone = "UTC"): Promise<HeatmapCell[]> {
     const connection = await this.resolveConnection(connectionId);
     try {
+      const { source, events } = await this.resolveSource(connection, queueName, Date.now() - HEATMAP_WINDOW_DAYS * 24 * 60 * 60_000);
+      if (source === "events") return aggregateHeatmap(eventsToTimings(events), Date.now(), timeZone);
       const queue = this.redis.getQueue(connection, queueName);
-      const jobs = await queue.getJobs(["completed", "failed", "active", "waiting"], 0, 1000);
-      return aggregateHeatmap(this.toTimings(jobs));
+      const jobs = await queue.getJobs(["completed", "failed"], 0, 1000);
+      return aggregateHeatmap(this.toTimings(jobs), Date.now(), timeZone);
     } catch (error) {
       throw redisUnreachable(`Falha ao computar heatmap da fila "${queueName}"`, error);
     }
@@ -210,9 +303,12 @@ export class QueueInspectionService {
     const connection = await this.resolveConnection(connectionId);
     try {
       const queue = this.redis.getQueue(connection, queueName);
-      const jobs = await queue.getJobs(["failed"], 0, 500);
-      this.logger.debug({ connectionId, queueName, failed: jobs.length }, "Agrupamento de erros da fila");
-      return aggregateErrors(this.toTimings(jobs));
+      const failedJobs = await queue.getJobs(["failed"], 0, 500);
+      this.logger.debug({ connectionId, queueName, failed: failedJobs.length }, "Agrupamento de erros da fila");
+      if (failedJobs.length > 0) return aggregateErrors(this.toTimings(failedJobs));
+      // Falhas removidas (`removeOnFail`): recupera as razões do stream de eventos.
+      const { events } = await this.readFinishedEvents(connection, queueName, Date.now() - ERRORS_WINDOW_MS);
+      return aggregateErrors(eventsToTimings(events.filter((e) => e.event === "failed")));
     } catch (error) {
       throw redisUnreachable(`Falha ao agrupar erros da fila "${queueName}"`, error);
     }

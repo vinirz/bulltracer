@@ -39,7 +39,6 @@ import {
   statusVariant,
 } from "@/lib/queue-helpers";
 import { cn } from "@/lib/utils";
-import { buildHeatmapData, mockJobs, mockQueues } from "@/mocks";
 import { useAppStore } from "@/store/useAppStore";
 import { useToastStore } from "@/store/useToastStore";
 import type { JobRecord, JobStatus } from "@/types";
@@ -68,20 +67,24 @@ function QueueDetailPage() {
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
   const [search, setSearch] = useState("");
 
-  const queue =
-    activeQueues.find((q) => q.name === queueName) ??
-    mockQueues.find((q) => q.name === queueName);
+  const queue = activeQueues.find((q) => q.name === queueName);
   const online = apiStatus === "online" && activeConnectionId !== null;
 
-  // Dados reais do servidor (leitura direta do Redis), com fallback para os
-  // mocks de demonstração quando a API está offline.
+  // Dados do servidor (leitura direta do Redis).
   const [remoteJobs, setRemoteJobs] = useState<JobRecord[]>([]);
   const [remoteHeatmap, setRemoteHeatmap] = useState<HeatmapCellDto[] | null>(null);
   const [remoteErrors, setRemoteErrors] = useState<ErrorGroupDto[] | null>(null);
   const [queueMetrics, setQueueMetrics] = useState<QueueMetricsResponse | null>(null);
 
+  // Status que a fila não mantém no Redis (removeOnComplete/removeOnFail) saem da UI.
+  const retention = queueMetrics?.retention ?? { completed: true, failed: true };
+  const visibleFilters = statusFilters.filter(
+    (f) => !(f.value === "completed" && !retention.completed) && !(f.value === "failed" && !retention.failed),
+  );
+  const activeFilter = visibleFilters.some((f) => f.value === statusFilter) ? statusFilter : "all";
+
   useEffect(() => {
-    if (!online || !activeConnectionId) return; // estado limpo fora do effect (fallback mock)
+    if (!online || !activeConnectionId) return;
     let cancelled = false;
     const statuses: JobStatusParam[] = ["waiting", "active", "completed", "failed", "delayed"];
     void (async () => {
@@ -121,17 +124,13 @@ function QueueDetailPage() {
     };
   }, [online, activeConnectionId, queueName]);
 
-  const mockJobsForQueue = useMemo(
-    () => mockJobs.filter((job) => job.queueName === queueName),
-    [queueName],
-  );
-  const allJobs = online ? remoteJobs : mockJobsForQueue;
+  const allJobs = useMemo(() => (online ? remoteJobs : []), [online, remoteJobs]);
 
   const jobs = useMemo(() => {
     const query = search.trim().toLowerCase();
 
     return allJobs.filter((job) => {
-      if (statusFilter !== "all" && job.status !== statusFilter) return false;
+      if (activeFilter !== "all" && job.status !== activeFilter) return false;
 
       if (query) {
         const haystack = `${job.id} ${job.processName} ${JSON.stringify(job.data)}`.toLowerCase();
@@ -140,19 +139,19 @@ function QueueDetailPage() {
 
       return true;
     });
-  }, [allJobs, statusFilter, search]);
+  }, [allJobs, activeFilter, search]);
 
   const errorGroups = useMemo(() => {
     if (online && remoteErrors) return remoteErrors;
     return groupJobErrors(allJobs);
   }, [online, remoteErrors, allJobs]);
 
-  const heatmapCells = useMemo(() => {
-    if (online && remoteHeatmap) return remoteHeatmap;
-    return buildHeatmapData(queueName, queue?.health ?? "healthy");
-  }, [online, remoteHeatmap, queueName, queue?.health]);
+  const heatmapCells = useMemo(
+    () => (online && remoteHeatmap ? remoteHeatmap : []),
+    [online, remoteHeatmap],
+  );
 
-  const metrics = queueMetrics?.summary ?? queue?.metrics;
+  const metrics = online ? queueMetrics?.summary : undefined;
 
   const handleOpenJob = (jobId: string) => {
     const known = allJobs.find((job) => job.id === jobId);
@@ -212,8 +211,8 @@ function QueueDetailPage() {
         <TabsContent value="jobs">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap gap-1.5 rounded-lg border border-zinc-800 bg-zinc-900 p-1">
-              {statusFilters.map((filter) => {
-                const isActive = statusFilter === filter.value;
+              {visibleFilters.map((filter) => {
+                const isActive = activeFilter === filter.value;
                 return (
                   <button
                     key={filter.value}
@@ -339,13 +338,28 @@ function QueueDetailPage() {
             </Card>
 
             {queue ? (
-              <div className="grid grid-cols-3 gap-2 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-center sm:grid-cols-5">
+              <div className="grid grid-cols-3 gap-2 rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 text-center sm:grid-flow-col sm:auto-cols-fr">
                 <CountStat label="Aguardando" value={queue.counts.waiting} className="text-amber-400" />
                 <CountStat label="Ativos" value={queue.counts.active} className="text-blue-400" />
-                <CountStat label="Concluídos" value={queue.counts.completed} className="text-emerald-400" />
-                <CountStat label="Falhas" value={queue.counts.failed} className="text-red-400" />
+                {retention.completed ? (
+                  <CountStat label="Concluídos" value={queue.counts.completed} className="text-emerald-400" />
+                ) : null}
+                {retention.failed ? (
+                  <CountStat label="Falhas" value={queue.counts.failed} className="text-red-400" />
+                ) : null}
                 <CountStat label="Atrasados" value={queue.counts.delayed} className="text-zinc-300" />
               </div>
+            ) : null}
+
+            {queueMetrics?.source === "events" ? (
+              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                Esta fila remove os jobs concluídos. Vazão e falhas vêm do histórico de eventos do
+                BullMQ; tempos de espera e processamento e a contagem de concluídos ficam
+                indisponíveis.
+                {queueMetrics.truncated
+                  ? " O histórico de eventos está cheio: períodos mais antigos já foram descartados."
+                  : ""}
+              </p>
             ) : null}
 
             {metrics ? (
@@ -360,15 +374,15 @@ function QueueDetailPage() {
                 <MetricCard
                   icon={TimerReset}
                   label="Tempo de espera"
-                  value={formatMs(metrics.waitTimeMs)}
-                  tone={metrics.waitTimeMs > 3000 ? "warning" : "default"}
+                  value={metrics.waitTimeMs === null ? "—" : formatMs(metrics.waitTimeMs)}
+                  tone={metrics.waitTimeMs !== null && metrics.waitTimeMs > 3000 ? "warning" : "default"}
                   description="Tempo médio que um job fica aguardando na fila antes de começar a ser processado."
                   formula="Espera média = média(Início do processamento − Criação do job)"
                 />
                 <MetricCard
                   icon={Timer}
                   label="Processamento"
-                  value={formatMs(metrics.processTimeMs)}
+                  value={metrics.processTimeMs === null ? "—" : formatMs(metrics.processTimeMs)}
                   description="Tempo médio que o worker leva para executar um job do início ao fim."
                   formula="Processamento médio = média(Fim da execução − Início da execução)"
                 />

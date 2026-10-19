@@ -86,3 +86,9 @@ export interface AlertRule {
   threshold: number;
   webhookId: string;
 }
+
+/** Um ponto de série temporal com um valor por fila (chave = nome da fila). */
+export interface SeriesPoint {
+  timeLabel: string;
+  [queueName: string]: number | string;
+}

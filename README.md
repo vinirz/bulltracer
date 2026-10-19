@@ -14,10 +14,6 @@ bulltracer/
 │  ├─ server/      → API REST + WebSocket + Watcher (Fastify, BullMQ, SQLite)
 │  └─ dashboard/   → SPA React (Vite, TanStack Router, Zustand, Tailwind)
 ├─ bench/          → experimentos de validação (vazão, falhas, latência, overhead)
-├─ docs/
-│  ├─ tcc/         → texto da monografia
-│  └─ decisoes/    → registros de decisões de arquitetura
-└─ ROADMAP.md      → quadro kanban do TCC II
 ```
 
 Princípio central: o **Redis é a única fonte de verdade** dos jobs; o SQLite guarda apenas
@@ -62,7 +58,7 @@ docker compose up -d --build
 Dashboard em http://localhost:8080. Cadastre o Redis a monitorar na tela **Conexões**
 (use o host acessível a partir do container do servidor).
 
-> Atenção: a versão atual **não tem autenticação**. Não exponha à internet (ver ROADMAP, Fase 5).
+> Atenção: a versão atual **não tem autenticação**. Não exponha à internet.
 
 ## Licença
 

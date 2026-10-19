@@ -1,12 +1,12 @@
 import { Sparkles } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
 import { alertMetricMeta, formatAlertThreshold } from "@/lib/queue-helpers";
-import { mockQueues } from "@/mocks";
+import { api } from "@/lib/api";
 import { useAppStore } from "@/store/useAppStore";
-import type { AlertMetricType, AlertRule, QueueSummary, Webhook } from "@/types";
+import type { AlertMetricType, AlertRule, Webhook } from "@/types";
 
 export function AlertRuleDialog({
   open,
@@ -64,15 +64,37 @@ function AlertRuleForm({
   const [connectionId, setConnectionId] = useState(
     initialRule?.connectionId ?? activeConnectionId ?? connections[0]?.id ?? "",
   );
-  // Filas da conexão selecionada; cai para o catálogo mock em modo demo.
-  const availableQueues: QueueSummary[] = useMemo(() => {
-    const byConnection = queues.filter((q) => q.connectionId === connectionId);
-    return byConnection.length > 0 ? byConnection : mockQueues.filter((q) => q.connectionId === connectionId);
-  }, [queues, connectionId]);
+  // Filas da conexão selecionada: a ativa vem do store; as demais são consultadas no servidor.
+  const [fetchedQueues, setFetchedQueues] = useState<{ connectionId: string; names: string[] } | null>(null);
+  const availableQueues: { name: string }[] = useMemo(() => {
+    if (connectionId === activeConnectionId) return queues.filter((q) => q.connectionId === connectionId);
+    return fetchedQueues?.connectionId === connectionId
+      ? fetchedQueues.names.map((name) => ({ name }))
+      : [];
+  }, [queues, connectionId, activeConnectionId, fetchedQueues]);
 
   const [queueName, setQueueName] = useState(
     initialRule?.queueName ?? availableQueues[0]?.name ?? "",
   );
+
+  useEffect(() => {
+    if (!connectionId || connectionId === activeConnectionId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const snapshots = await api.listQueues(connectionId);
+        if (cancelled) return;
+        const names = snapshots.map((s) => s.queueName);
+        setFetchedQueues({ connectionId, names });
+        setQueueName((current) => (names.includes(current) ? current : (names[0] ?? "")));
+      } catch {
+        if (!cancelled) setFetchedQueues({ connectionId, names: [] });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [connectionId, activeConnectionId]);
   const [metricType, setMetricType] = useState<AlertMetricType>(
     initialRule?.metricType ?? "failed_jobs",
   );
@@ -129,11 +151,12 @@ function AlertRuleForm({
                   onChange={(e) => {
                     const next = e.target.value;
                     setConnectionId(next);
-                    const nextQueues =
-                      queues.filter((q) => q.connectionId === next).length > 0
-                        ? queues.filter((q) => q.connectionId === next)
-                        : mockQueues.filter((q) => q.connectionId === next);
-                    setQueueName(nextQueues[0]?.name ?? "");
+                    // Conexão ativa: filas já no store; as outras chegam pelo efeito acima.
+                    setQueueName(
+                      next === activeConnectionId
+                        ? (queues.find((q) => q.connectionId === next)?.name ?? "")
+                        : "",
+                    );
                   }}
                   className="w-full rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2.5 text-sm text-zinc-200 outline-none transition-colors focus:border-zinc-600"
                 >

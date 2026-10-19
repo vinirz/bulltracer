@@ -9,15 +9,14 @@ import {
 } from "recharts";
 
 import { queueColor } from "@/lib/queue-helpers";
-import type { LatencyPoint } from "@/mocks";
-import type { QueueSummary } from "@/types";
+import type { QueueSummary, SeriesPoint } from "@/types";
 
 export function LatencyChart({
   queues,
   series,
 }: {
   queues: QueueSummary[];
-  series: LatencyPoint[];
+  series: SeriesPoint[];
 }) {
   return (
     <div className="h-64 w-full">

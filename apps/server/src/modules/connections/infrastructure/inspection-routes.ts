@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
+import { isValidTimeZone } from "../application/metrics-aggregation.js";
 import type { QueueInspectionService } from "../application/queue-inspection-service.js";
 
 /**
@@ -29,8 +30,10 @@ export function registerInspectionRoutes(
   /** Distribuição volume/falha por (dia da semana, hora), últimos 14 dias. */
   app.get("/api/connections/:id/queues/:name/heatmap", async (request, reply) => {
     const { id, name } = request.params as { id: string; name: string };
+    // Fuso do cliente (IANA); inválido ou ausente cai para UTC.
+    const { tz } = request.query as { tz?: string };
     try {
-      return await deps.queueInspection.getHeatmap(id, name);
+      return await deps.queueInspection.getHeatmap(id, name, tz && isValidTimeZone(tz) ? tz : "UTC");
     } catch (error) {
       const err = error as Error & { statusCode?: number };
       return reply.code(err.statusCode ?? 502).send({ error: err.message });

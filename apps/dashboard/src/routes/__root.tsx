@@ -31,7 +31,7 @@ function RootLayout() {
         {apiStatus === "offline" ? (
           <div className="flex items-center justify-between gap-3 border-b border-amber-500/20 bg-amber-500/5 px-6 py-1.5 text-xs text-amber-400">
             <span>
-              Servidor BullTracer não acessível — exibindo dados de demonstração (mocks).
+              Servidor BullTracer não acessível. Verifique se ele está em execução e tente reconectar.
             </span>
             <button
               type="button"

@@ -121,11 +121,18 @@ export interface MetricPointDto {
 
 export interface QueueMetricsResponse {
   rangeMinutes: number;
+  /** "jobs": calculado dos jobs existentes; "events": do stream de eventos (fila remove jobs concluídos). */
+  source: "jobs" | "events";
+  /** Stream de eventos cheio: o histórico mais antigo já foi aparado pelo BullMQ. */
+  truncated: boolean;
+  /** Status de job que a fila mantém no Redis; os demais não aparecem na UI. */
+  retention: { completed: boolean; failed: boolean };
   points: MetricPointDto[];
   summary: {
     throughput: number;
-    waitTimeMs: number;
-    processTimeMs: number;
+    /** `null` quando indisponível (jobs concluídos removidos). */
+    waitTimeMs: number | null;
+    processTimeMs: number | null;
     queuePressure: number;
   };
 }

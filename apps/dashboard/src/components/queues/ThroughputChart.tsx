@@ -9,15 +9,14 @@ import {
 } from "recharts";
 
 import { queueColor } from "@/lib/queue-helpers";
-import type { ThroughputPoint } from "@/mocks";
-import type { QueueSummary } from "@/types";
+import type { QueueSummary, SeriesPoint } from "@/types";
 
 export function ThroughputChart({
   queues,
   series,
 }: {
   queues: QueueSummary[];
-  series: ThroughputPoint[];
+  series: SeriesPoint[];
 }) {
   return (
     <div className="h-64 w-full">

@@ -96,7 +96,7 @@ export function QueueHeatmap({ cells }: { cells: HeatmapCellDto[] }) {
                       {cell ? (
                         <Tooltip
                           side="top"
-                          className="w-full"
+                          className="flex w-full"
                           content={
                             <span className="flex flex-col">
                               <span className="font-medium text-zinc-100">

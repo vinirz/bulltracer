@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Inbox } from "lucide-react";
+import { Inbox, ServerOff } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -13,8 +13,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { QueueMetricsResponse } from "@/lib/api/types";
 import { queueColor } from "@/lib/queue-helpers";
-import { buildLatencySeries, buildThroughputSeries } from "@/mocks";
 import { useAppStore } from "@/store/useAppStore";
+import type { SeriesPoint } from "@/types";
 
 export const Route = createFileRoute("/")({
   component: OverviewPage,
@@ -33,6 +33,7 @@ const cardVariants = {
 function OverviewPage() {
   const isSwitchingConnection = useAppStore((s) => s.isSwitchingConnection);
   const apiStatus = useAppStore((s) => s.apiStatus);
+  const queuesError = useAppStore((s) => s.queuesError);
   const activeConnectionId = useAppStore((s) => s.activeConnectionId);
   const queues = useAppStore(
     useShallow((s) => s.queues.filter((q) => q.connectionId === s.activeConnectionId)),
@@ -48,7 +49,7 @@ function OverviewPage() {
   // formato esperado pelos gráficos: um ponto por bucket com o valor por fila.
   useEffect(() => {
     if (!online || !activeConnectionId) {
-      return; // estado limpo via fallback de render (mocks) fora do effect
+      return;
     }
     let cancelled = false;
     void (async () => {
@@ -68,34 +69,30 @@ function OverviewPage() {
     };
   }, [online, activeConnectionId, queues]);
 
-  const throughputSeries = useMemo(() => {
-    if (online && Object.keys(metricsByQueue).length > 0) {
-      const first = metricsByQueue[queues[0]?.name ?? ""]?.points;
-      if (!first || first.length === 0) return buildThroughputSeries(queues);
-      return first.map((point, index) => {
-        const row: Record<string, number | string> = { timeLabel: point.timeLabel };
-        for (const queue of queues) row[queue.name] = metricsByQueue[queue.name]?.points[index]?.throughput ?? 0;
-        return row as { timeLabel: string; [k: string]: number | string };
-      });
-    }
-    return buildThroughputSeries(queues);
-  }, [online, metricsByQueue, queues]);
+  // Um ponto por bucket de 5min, com o valor de cada fila (série vazia enquanto não há dados).
+  const buildSeries = (valueOf: (p: QueueMetricsResponse["points"][number]) => number): SeriesPoint[] => {
+    const first = metricsByQueue[queues[0]?.name ?? ""]?.points;
+    if (!online || !first || first.length === 0) return [];
+    return first.map((point, index) => {
+      const row: SeriesPoint = { timeLabel: point.timeLabel };
+      for (const queue of queues) {
+        const p = metricsByQueue[queue.name]?.points[index];
+        row[queue.name] = p ? valueOf(p) : 0;
+      }
+      return row;
+    });
+  };
 
-  const latencySeries = useMemo(() => {
-    if (online && Object.keys(metricsByQueue).length > 0) {
-      const first = metricsByQueue[queues[0]?.name ?? ""]?.points;
-      if (!first || first.length === 0) return buildLatencySeries(queues);
-      return first.map((point, index) => {
-        const row: Record<string, number | string> = { timeLabel: point.timeLabel };
-        for (const queue of queues) {
-          const p = metricsByQueue[queue.name]?.points[index];
-          row[queue.name] = p ? Math.round((p.waitTimeMs ?? 0) + (p.processTimeMs ?? 0)) : 0;
-        }
-        return row as { timeLabel: string; [k: string]: number | string };
-      });
-    }
-    return buildLatencySeries(queues);
-  }, [online, metricsByQueue, queues]);
+  const throughputSeries = useMemo(
+    () => buildSeries((p) => p.throughput),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [online, metricsByQueue, queues],
+  );
+  const latencySeries = useMemo(
+    () => buildSeries((p) => Math.round((p.waitTimeMs ?? 0) + (p.processTimeMs ?? 0))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [online, metricsByQueue, queues],
+  );
 
   return (
     <div className="p-6">
@@ -174,8 +171,28 @@ function OverviewPage() {
 
       {!isSwitchingConnection && queues.length === 0 ? (
         <div className="mt-10 flex flex-col items-center gap-2 text-center text-zinc-500">
-          <Inbox className="h-8 w-8 text-zinc-700" />
-          <p className="text-sm">Nenhuma fila encontrada para esta conexão.</p>
+          {apiStatus === "offline" ? (
+            <>
+              <ServerOff className="h-8 w-8 text-zinc-700" />
+              <p className="text-sm">Servidor BullTracer não acessível.</p>
+            </>
+          ) : !activeConnectionId ? (
+            <>
+              <Inbox className="h-8 w-8 text-zinc-700" />
+              <p className="text-sm">Cadastre uma conexão Redis em Conexões para começar.</p>
+            </>
+          ) : queuesError ? (
+            <>
+              <ServerOff className="h-8 w-8 text-zinc-700" />
+              <p className="text-sm">Não foi possível ler as filas desta conexão.</p>
+              <p className="max-w-md font-mono text-xs text-zinc-600">{queuesError}</p>
+            </>
+          ) : (
+            <>
+              <Inbox className="h-8 w-8 text-zinc-700" />
+              <p className="text-sm">Nenhuma fila encontrada para esta conexão.</p>
+            </>
+          )}
         </div>
       ) : null}
     </div>
