@@ -17,7 +17,23 @@ function waitRule(threshold: number): AlertRule {
   };
 }
 
-function setup(rules: AlertRule[], job: Record<string, unknown> | undefined) {
+function failedRule(threshold: number): AlertRule {
+  return {
+    id: "rule-failed",
+    connectionId: "conn-1",
+    queueName: "video",
+    metricType: "failed_jobs",
+    threshold,
+    webhookId: "wh-1",
+  };
+}
+
+function setup(
+  rules: AlertRule[],
+  job: Record<string, unknown> | undefined,
+  evaluator = new InMemoryRuleEvaluator(),
+  options: { tickMs?: number } = {},
+) {
   const events = Object.assign(new EventEmitter(), {
     waitUntilReady: () => Promise.resolve(),
   });
@@ -40,11 +56,12 @@ function setup(rules: AlertRule[], job: Record<string, unknown> | undefined) {
     redisManager as never,
     alertsService as never,
     dispatcher as never,
-    new InMemoryRuleEvaluator(),
+    evaluator,
     sink as never,
     logger as never,
+    options,
   );
-  return { watcher, events, getJob, dispatcher, sink };
+  return { watcher, events, getJob, dispatcher, sink, alertsService, evaluator };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -112,5 +129,62 @@ describe("Watcher — wait_time_exceeded", () => {
     expect(sink.broadcast).toHaveBeenCalledWith(
       expect.objectContaining({ type: "BULLMQ_EVENT", event: "active", queue: "video" }),
     );
+  });
+});
+
+describe("Watcher — notificação por transição de estado", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("envia UM webhook (firing) numa rajada de falhas acima do limiar", async () => {
+    const { watcher, events, dispatcher } = setup([failedRule(3)], undefined);
+    await watcher.watch(connection, "video");
+    for (let i = 0; i < 20; i++) events.emit("failed", { jobId: String(i), failedReason: "boom" });
+    await flush();
+
+    expect(dispatcher.dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatcher.dispatch.mock.calls[0][1]).toMatchObject({
+      ruleId: "rule-failed",
+      status: "firing",
+      value: 3,
+      threshold: 3,
+    });
+    await watcher.close();
+  });
+
+  it("envia resolved quando as falhas param (pelo ticker, sem novos eventos)", async () => {
+    jest.useFakeTimers();
+    const evaluator = new InMemoryRuleEvaluator({ failedJobsWindowMs: 2_000, recoveryMs: 3_000, reminderMs: 0 });
+    const { watcher, events, dispatcher } = setup([failedRule(3)], undefined, evaluator, { tickMs: 1_000 });
+    await watcher.watch(connection, "video");
+
+    for (let i = 0; i < 3; i++) events.emit("failed", { jobId: String(i) });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(dispatcher.dispatch).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(dispatcher.dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatcher.dispatch.mock.calls[1][1]).toMatchObject({ status: "resolved", ruleId: "rule-failed" });
+
+    await jest.advanceTimersByTimeAsync(30_000); // sem novas notificações depois de resolvido
+    expect(dispatcher.dispatch).toHaveBeenCalledTimes(2);
+    await watcher.close();
+  });
+
+  it("descarta o estado e não notifica se a regra foi removida durante o alerta", async () => {
+    jest.useFakeTimers();
+    const evaluator = new InMemoryRuleEvaluator({ failedJobsWindowMs: 2_000, recoveryMs: 3_000 });
+    const { watcher, events, dispatcher, alertsService } = setup([failedRule(3)], undefined, evaluator, { tickMs: 1_000 });
+    await watcher.watch(connection, "video");
+
+    for (let i = 0; i < 3; i++) events.emit("failed", { jobId: String(i) });
+    await jest.advanceTimersByTimeAsync(0);
+    expect(dispatcher.dispatch).toHaveBeenCalledTimes(1);
+
+    alertsService.rulesForQueue.mockResolvedValue([]); // regra apagada
+    await jest.advanceTimersByTimeAsync(20_000);
+    expect(dispatcher.dispatch).toHaveBeenCalledTimes(1); // nenhum "resolved" fantasma
+    await watcher.close();
   });
 });

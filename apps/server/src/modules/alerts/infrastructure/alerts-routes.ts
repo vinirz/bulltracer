@@ -118,7 +118,9 @@ export function registerAlertsRoutes(
       return reply.code(400).send({ error: parsed.error.issues });
     }
     try {
-      return await deps.alertsService.updateAlertRule(id, parsed.data);
+      const updated = await deps.alertsService.updateAlertRule(id, parsed.data);
+      deps.watcher.forgetRule(id); // regra alterada: recomeça como "normal"
+      return updated;
     } catch (error) {
       const err = error as Error & { statusCode?: number };
       return reply.code(err.statusCode ?? 404).send({ error: err.message });
@@ -129,6 +131,7 @@ export function registerAlertsRoutes(
     const { id } = request.params as { id: string };
     try {
       await deps.alertsService.removeAlertRule(id);
+      deps.watcher.forgetRule(id);
       return reply.code(204).send();
     } catch (error) {
       return reply.code(404).send({ error: (error as Error).message });

@@ -4,6 +4,9 @@ import type { AlertRuleRow, WebhookRow } from "../../../db/schema.js";
 export const ALERT_METRICS = ["failed_jobs", "wait_time_exceeded"] as const;
 export type AlertMetricType = (typeof ALERT_METRICS)[number];
 
+/** Estado de um alerta notificado: início do incidente, lembrete periódico ou recuperação. */
+export type AlertStatus = "firing" | "reminder" | "resolved";
+
 export interface Webhook {
   id: string;
   name: string;

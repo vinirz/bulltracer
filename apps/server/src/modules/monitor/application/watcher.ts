@@ -10,6 +10,7 @@ import type {
   BullMqEventType,
   NotificationSink,
   RuleEvaluator,
+  RuleViolation,
 } from "../domain/events.js";
 
 interface WatchedQueue {
@@ -36,6 +37,7 @@ interface WatchedQueue {
  */
 export class Watcher {
   private readonly watched = new Map<string, WatchedQueue>();
+  private tickTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly redisManager: RedisManager,
@@ -44,6 +46,7 @@ export class Watcher {
     private readonly evaluator: RuleEvaluator,
     private readonly sink: NotificationSink,
     private readonly logger: Logger,
+    private readonly options: { tickMs?: number } = {},
   ) {}
 
   private key(connectionId: string, queueName: string): string {
@@ -88,6 +91,7 @@ export class Watcher {
     // Registra a entrada ANTES da prontidão: `close()` precisa alcançar o
     // QueueEvents mesmo se o Redis estiver inacessível.
     this.watched.set(key, entry);
+    this.startTicker();
 
     // Prontidão NÃO bloqueante: se o Redis estiver fora do ar, o stream
     // tenta reconectar (retryStrategy limitado no RedisManager) e o evento
@@ -118,6 +122,7 @@ export class Watcher {
     const entry = this.watched.get(key);
     if (!entry) return;
     this.watched.delete(key);
+    if (this.watched.size === 0) this.stopTicker();
     await this.redisManager.closeQueueEvents(entry.events);
     // Nenhuma outra fila dessa conexão monitorada? Encerra o client de
     // eventos para não deixar loops de re-leitura vivos em background.
@@ -170,44 +175,78 @@ export class Watcher {
         waitTimeMs,
       });
 
-      for (const violation of violations) {
-        const rule = rules.find((r) => r.id === violation.ruleId);
-        if (!rule) continue;
-        const webhookUrl = await this.resolveWebhookUrl(rule.webhookId);
-        if (!webhookUrl) {
-          this.logger.warn(
-            { ruleId: rule.id, webhookId: rule.webhookId },
-            "Regra violada mas webhook não encontrado; evento descartado",
-          );
-          continue;
-        }
-        this.logger.info(
-          { ruleId: rule.id, queueName, metricType: violation.metricType, value: violation.value },
-          "Regra de alerta VIOLADA — disparando webhook",
-        );
-        // Fire-and-forget: nunca bloquear o Event Loop com I/O de rede.
-        void this.webhookDispatcher
-          .dispatch(webhookUrl, {
-            ruleId: rule.id,
-            queueName,
-            metricType: violation.metricType,
-            value: violation.value,
-            threshold: violation.threshold,
-            occurredAt: new Date(occurredAt).toISOString(),
-          })
-          .catch((error) => {
-            this.logger.error(
-              { ruleId: rule.id, error: error instanceof Error ? error.message : String(error) },
-              "Falha no disparo assíncrono do webhook",
-            );
-          });
-      }
+      await this.dispatchNotifications(violations);
     } catch (error) {
       this.logger.error(
         { connectionId: connection.id, queueName, error },
         "Erro ao avaliar regras de alerta",
       );
     }
+  }
+
+  /**
+   * Envia as notificações de alerta (firing/reminder/resolved). Fire-and-forget:
+   * nunca bloqueia o Event Loop com I/O de rede. Só notifica regras que ainda
+   * existem e cuja fila segue monitorada (descarta o estado das demais).
+   */
+  private async dispatchNotifications(violations: RuleViolation[]): Promise<void> {
+    for (const violation of violations) {
+      const { connectionId, queueName, ruleId } = violation;
+      const rules = await this.alertsService.rulesForQueue(connectionId, queueName);
+      if (!this.watched.has(this.key(connectionId, queueName)) || !rules.some((r) => r.id === ruleId)) {
+        this.evaluator.forget(ruleId);
+        continue;
+      }
+      const webhookUrl = await this.resolveWebhookUrl(violation.webhookId);
+      if (!webhookUrl) {
+        this.logger.warn(
+          { ruleId, webhookId: violation.webhookId },
+          "Alerta sem webhook (removido?); notificação descartada",
+        );
+        continue;
+      }
+      this.logger.info(
+        { ruleId, queueName, metricType: violation.metricType, status: violation.status, value: violation.value },
+        `Alerta ${violation.status} — disparando webhook`,
+      );
+      void this.webhookDispatcher
+        .dispatch(webhookUrl, {
+          ruleId,
+          queueName,
+          metricType: violation.metricType,
+          status: violation.status,
+          value: violation.value,
+          threshold: violation.threshold,
+          occurredAt: new Date().toISOString(),
+        })
+        .catch((error) => {
+          this.logger.error(
+            { ruleId, error: error instanceof Error ? error.message : String(error) },
+            "Falha no disparo assíncrono do webhook",
+          );
+        });
+    }
+  }
+
+  /** Passagem do tempo: recuperações e lembretes não dependem de eventos da fila. */
+  private startTicker(): void {
+    if (this.tickTimer) return;
+    this.tickTimer = setInterval(() => {
+      void this.dispatchNotifications(this.evaluator.tick(Date.now())).catch((error) => {
+        this.logger.error({ error }, "Erro ao processar recuperações/lembretes de alerta");
+      });
+    }, this.options.tickMs ?? 5000);
+    this.tickTimer.unref(); // não mantém o processo vivo
+  }
+
+  private stopTicker(): void {
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    this.tickTimer = null;
+  }
+
+  /** Descarta o estado de alerta de uma regra removida ou alterada. */
+  forgetRule(ruleId: string): void {
+    this.evaluator.forget(ruleId);
   }
 
   /** Lê o job no Redis e calcula quanto ele esperou na fila; `undefined` se não mensurável. */
@@ -229,6 +268,7 @@ export class Watcher {
   }
 
   async close(): Promise<void> {
+    this.stopTicker();
     for (const key of [...this.watched.keys()]) {
       const [connectionId, queueName] = key.split(":");
       if (connectionId && queueName) await this.unwatch(connectionId, queueName);

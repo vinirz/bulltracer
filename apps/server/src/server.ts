@@ -70,7 +70,10 @@ export async function buildApp(ctx: BuildContext): Promise<{ app: FastifyInstanc
   );
 
   const webSocketHub = new WebSocketHub(logger);
-  const ruleEvaluator = new InMemoryRuleEvaluator();
+  const ruleEvaluator = new InMemoryRuleEvaluator({
+    reminderMs: config.ALERT_REMINDER_MS,
+    recoveryMs: config.ALERT_RECOVERY_MS,
+  });
 
   /* ---------- Application (casos de uso) ---------- */
   const connectionService = new ConnectionService(connectionRepository, redisManager, logger);
@@ -83,6 +86,7 @@ export async function buildApp(ctx: BuildContext): Promise<{ app: FastifyInstanc
     ruleEvaluator,
     webSocketHub,
     logger,
+    { tickMs: config.ALERT_TICK_MS },
   );
 
   const deps: AppDependencies = {

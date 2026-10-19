@@ -1,5 +1,7 @@
 import type { Logger } from "pino";
 
+import type { AlertStatus } from "../domain/entities.js";
+
 /**
  * Dispatcher de webhooks — dispara POSTs assíncronos SEM bloquear o Event Loop.
  *
@@ -16,6 +18,8 @@ export interface WebhookEventPayload {
   ruleId: string;
   queueName: string;
   metricType: string;
+  /** `firing`: incidente começou · `reminder`: segue em alerta · `resolved`: recuperou. */
+  status: AlertStatus;
   value: number;
   threshold: number;
   occurredAt: string;

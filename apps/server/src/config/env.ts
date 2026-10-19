@@ -13,6 +13,12 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("*"),
   WEBHOOK_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
   WEBHOOK_RETRY_ATTEMPTS: z.coerce.number().int().min(0).max(5).default(3),
+  /** Intervalo entre lembretes de um alerta ainda ativo (ms); 0 desliga. */
+  ALERT_REMINDER_MS: z.coerce.number().int().min(0).default(900_000),
+  /** Tempo sem violação para declarar o alerta recuperado (ms). */
+  ALERT_RECOVERY_MS: z.coerce.number().int().positive().default(60_000),
+  /** Frequência da checagem de recuperação/lembretes (ms). */
+  ALERT_TICK_MS: z.coerce.number().int().positive().default(5000),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;
